@@ -1,0 +1,23 @@
+[package]
+name = "yjump"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "terminal game"
+homepage = "https://github.com/Ruddle/yjump"
+repository = "https://github.com/Ruddle/yjump"
+readme = "README.md"
+keywords = ["game", "terminal","cli"]
+categories = ["games","command-line-utilities"]
+
+[dependencies]
+
+[dependencies.crossterm]
+version = "0.26"
+
+[profile.release]
+strip = true  # Automatically strip symbols from the binary.
+opt-level = "z"  # Optimize for size.
+lto = true
+codegen-units = 1
+panic = "abort"
