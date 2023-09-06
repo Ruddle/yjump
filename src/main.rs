@@ -35,6 +35,32 @@ struct Pixel {
 }
 
 type MAP = [Cell; (W * H) as usize];
+fn gen_map(rand: &mut Rand) -> MAP {
+    let mut map = [Cell::Air; (W * H) as usize];
+    for x in 0..W {
+        for y in 0..H {
+            let index = (x + y * W) as usize;
+            let border = x == 0 || x == W - 1 || y == 0 || y == H - 1;
+            if border {
+                map[index] = Cell::Wall;
+            } else {
+                let r = rand.next() % 60;
+
+                if r < 1 {
+                    map[index] = Cell::Solid;
+                    let len = 2 + (rand.next() % 2) as isize;
+                    for u in -len..len {
+                        if x + u > 0 && x + u < W - 1 {
+                            let index = (x + u + y * W) as usize;
+                            map[index] = Cell::Solid;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    map
+}
 
 struct Rand(usize);
 
@@ -139,11 +165,15 @@ fn update_char(char: &mut Char, frames: usize, map: &mut MAP) {
 
 fn main() -> std::io::Result<()> {
     let mut stdout = stdout();
-    execute!(stdout, event::EnableFocusChange)?;
-    execute!(stdout, terminal::EnterAlternateScreen)?;
-
-    execute!(stdout, cursor::DisableBlinking)?;
+    execute!(
+        stdout,
+        event::EnableFocusChange,
+        terminal::EnterAlternateScreen,
+        cursor::DisableBlinking
+    )?;
     terminal::enable_raw_mode()?;
+
+    let rand: &mut Rand = &mut Rand(5);
 
     let mut player = Char {
         pos: Pos { x: W / 2, y: H - 2 },
@@ -158,7 +188,7 @@ fn main() -> std::io::Result<()> {
     };
 
     let mut ennemies = Vec::new();
-    let rand: &mut Rand = &mut Rand(3);
+
     for _ in 0..2 {
         let r = (rand.next() % 30) as isize;
         let ennemy = Char {
@@ -198,7 +228,6 @@ fn main() -> std::io::Result<()> {
     let mut map = gen_map(rand);
     let mut frames = 0;
     let mut score = 0;
-
     let mut switching = 0;
 
     loop {
@@ -233,57 +262,54 @@ fn main() -> std::io::Result<()> {
                     stdout.flush()?;
                     paused = true
                 }
-                Event::Key(event) => {
-                    match event {
-                        KeyEvent {
-                            code: KeyCode::Char('c'),
-                            modifiers: KeyModifiers::CONTROL,
-                            kind: KeyEventKind::Press,
-                            state: KeyEventState::NONE,
-                        }
-                        | KeyEvent {
-                            code: KeyCode::Esc, ..
-                        } => {
-                            execute!(stdout, event::DisableFocusChange)?;
-                            execute!(
-                                stdout,
-                                style::ResetColor,
-                                cursor::Show,
-                                terminal::LeaveAlternateScreen
-                            )?;
-                            terminal::disable_raw_mode()?;
-                            return Ok(());
-                        }
-
-                        KeyEvent {
-                            code: KeyCode::Char('d') | KeyCode::Right,
-                            ..
-                        } => {
-                            player.right_power = 1;
-                        }
-                        KeyEvent {
-                            code: KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Left,
-                            ..
-                        } => {
-                            player.right_power = -1;
-                        }
-                        KeyEvent {
-                            code: KeyCode::Char('z') | KeyCode::Char('w') | KeyCode::Up,
-                            ..
-                        } => {
-                            player.jump = 10;
-                            // right_power = 0;
-                        }
-                        KeyEvent {
-                            code: KeyCode::Char('s') | KeyCode::Down,
-                            ..
-                        } => {
-                            player.down = true;
-                            player.right_power = 0;
-                        }
-                        _ => {}
+                Event::Key(event) => match event {
+                    KeyEvent {
+                        code: KeyCode::Char('c'),
+                        modifiers: KeyModifiers::CONTROL,
+                        kind: KeyEventKind::Press,
+                        state: KeyEventState::NONE,
                     }
-                }
+                    | KeyEvent {
+                        code: KeyCode::Esc, ..
+                    } => {
+                        execute!(stdout, event::DisableFocusChange)?;
+                        execute!(
+                            stdout,
+                            style::ResetColor,
+                            cursor::Show,
+                            terminal::LeaveAlternateScreen
+                        )?;
+                        terminal::disable_raw_mode()?;
+                        return Ok(());
+                    }
+
+                    KeyEvent {
+                        code: KeyCode::Char('d') | KeyCode::Right,
+                        ..
+                    } => {
+                        player.right_power = 1;
+                    }
+                    KeyEvent {
+                        code: KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Left,
+                        ..
+                    } => {
+                        player.right_power = -1;
+                    }
+                    KeyEvent {
+                        code: KeyCode::Char('z') | KeyCode::Char('w') | KeyCode::Up,
+                        ..
+                    } => {
+                        player.jump = 10;
+                    }
+                    KeyEvent {
+                        code: KeyCode::Char('s') | KeyCode::Down,
+                        ..
+                    } => {
+                        player.down = true;
+                        player.right_power = 0;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -300,7 +326,10 @@ fn main() -> std::io::Result<()> {
             if dist < 70 {
                 ennemy.jump = 3;
                 ennemy.right_power = -1 + (rand.next() % 3) as isize;
-                if ennemy.right_power == 0 {
+                if ennemy.right_power == 0
+                    || (ennemy.pos.x == 1 && ennemy.right_power == -1)
+                    || (ennemy.pos.x == W - 2 && ennemy.right_power == 1)
+                {
                     ennemy.right_power = -1 + (rand.next() % 3) as isize;
                 }
             } else {
@@ -338,7 +367,7 @@ fn main() -> std::io::Result<()> {
         {
             queue!(stdout, style::SetForegroundColor(style::Color::White))?;
             queue!(stdout, style::SetBackgroundColor(style::Color::DarkBlue))?;
-            queue!(stdout, cursor::MoveTo((1) as u16, 0 as u16))?;
+            queue!(stdout, cursor::MoveTo(1, 0))?;
             queue!(stdout, style::Print("yjump"))?;
             queue!(stdout, cursor::MoveTo((W / 2 - 6) as u16, 0 as u16))?;
 
@@ -357,6 +386,11 @@ fn main() -> std::io::Result<()> {
         }
 
         for c in ennemies.iter().chain(std::iter::once(&player)) {
+            let logo = match c.right_power {
+                1 => '>',
+                -1 => '<',
+                _ => 'Y',
+            };
             {
                 let mut sx = c.old_pos.x;
                 let mut sy = c.old_pos.y;
@@ -369,11 +403,7 @@ fn main() -> std::io::Result<()> {
                             style::Color::DarkGreen
                         },
                         front: style::Color::Black,
-                        char: match c.right_power {
-                            1 => '>',
-                            -1 => '<',
-                            _ => 'Y',
-                        },
+                        char: logo,
                     };
                     let dy = (c.pos.y - sy).signum();
                     sy += dy;
@@ -390,11 +420,7 @@ fn main() -> std::io::Result<()> {
                         style::Color::Green
                     },
                     front: style::Color::Black,
-                    char: match c.right_power {
-                        1 => '>',
-                        -1 => '<',
-                        _ => 'Y',
-                    },
+                    char: logo,
                 };
             }
         }
@@ -412,38 +438,10 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        queue!(stdout, cursor::MoveTo((0) as u16, (0) as u16))?;
-        queue!(stdout, style::SetBackgroundColor(style::Color::Black))?;
+        queue!(stdout, cursor::MoveTo(0, 0))?;
+        queue!(stdout, style::SetBackgroundColor(style::Color::DarkBlue))?;
         queue!(stdout, style::SetForegroundColor(style::Color::DarkBlue))?;
-        // queue!(stdout, style::Print(""))?;
         stdout.flush()?;
         std::thread::sleep(Duration::from_millis(16));
     }
-}
-
-fn gen_map(rand: &mut Rand) -> MAP {
-    let mut map = [Cell::Air; (W * H) as usize];
-    for x in 0..W {
-        for y in 0..H {
-            let index = (x + y * W) as usize;
-            let border = x == 0 || x == W - 1 || y == 0 || y == H - 1;
-            if border {
-                map[index] = Cell::Wall;
-            } else {
-                let r = rand.next() % 60;
-
-                if r < 1 {
-                    map[index] = Cell::Solid;
-                    let len = 2 + (rand.next() % 2) as isize;
-                    for u in -len..len {
-                        if x + u > 0 && x + u < W - 1 {
-                            let index = (x + u + y * W) as usize;
-                            map[index] = Cell::Solid;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    map
 }
