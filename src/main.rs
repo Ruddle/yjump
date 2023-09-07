@@ -1,5 +1,5 @@
 use std::{
-    io::{stdout, Write},
+    io::{stdout, Stdout, Write},
     time::Duration,
 };
 
@@ -216,12 +216,27 @@ fn main() -> std::io::Result<()> {
     let mut stdout = stdout();
     execute!(
         stdout,
-        event::EnableFocusChange,
         terminal::EnterAlternateScreen,
-        cursor::DisableBlinking
+        event::EnableFocusChange,
+        cursor::DisableBlinking,
+        cursor::Hide
     )?;
     terminal::enable_raw_mode()?;
 
+    let _ = game(&mut stdout);
+
+    execute!(
+        stdout,
+        cursor::Show,
+        style::ResetColor,
+        event::DisableFocusChange,
+        terminal::LeaveAlternateScreen
+    )?;
+    terminal::disable_raw_mode()?;
+    Ok(())
+}
+
+fn game(stdout: &mut Stdout) -> std::io::Result<()> {
     let rand = &mut Rand(5);
 
     let mut player = Char {
@@ -329,14 +344,6 @@ fn main() -> std::io::Result<()> {
                     | KeyEvent {
                         code: KeyCode::Esc, ..
                     } => {
-                        execute!(stdout, event::DisableFocusChange)?;
-                        execute!(
-                            stdout,
-                            style::ResetColor,
-                            cursor::Show,
-                            terminal::LeaveAlternateScreen
-                        )?;
-                        terminal::disable_raw_mode()?;
                         return Ok(());
                     }
 
@@ -450,23 +457,29 @@ fn main() -> std::io::Result<()> {
         }
 
         {
-            queue!(stdout, style::SetForegroundColor(style::Color::White))?;
-            queue!(stdout, style::SetBackgroundColor(style::Color::DarkBlue))?;
-            queue!(stdout, cursor::MoveTo(1, 0))?;
-            queue!(stdout, style::Print("yjump"))?;
-            queue!(stdout, cursor::MoveTo((W / 2 - 6) as u16, 0 as u16))?;
-
-            let alt = switching > 0 && switching % 8 < 4;
-
-            if alt {
-                queue!(stdout, style::SetAttribute(style::Attribute::Bold))?;
+            let mut x = 1;
+            for c in "yjump ".chars().chain(env!("CARGO_PKG_VERSION").chars()) {
+                pixels[x] = Pixel {
+                    back: style::Color::DarkBlue,
+                    front: style::Color::White,
+                    char: c,
+                };
+                x += 1;
             }
-            queue!(stdout, style::Print(format!("Score: {}", score)))?;
-            if alt {
-                queue!(
-                    stdout,
-                    style::SetAttribute(style::Attribute::NormalIntensity)
-                )?;
+        }
+        {
+            let alt = switching > 0 && switching % 8 < 4;
+            let sep = if alt { '-' } else { ' ' };
+
+            let s = format!("{}Score: {}{}", sep, score, sep);
+            let mut x = W as usize / 2 - s.len() / 2;
+            for c in s.chars() {
+                pixels[x] = Pixel {
+                    back: style::Color::DarkBlue,
+                    front: style::Color::White,
+                    char: c,
+                };
+                x += 1;
             }
         }
 
@@ -514,6 +527,7 @@ fn main() -> std::io::Result<()> {
             }
         }
 
+        // Queue dirty pixels
         for (index, (p, pd)) in pixels.iter().zip(pixels_drawn.iter_mut()).enumerate() {
             if p.back != pd.back || p.front != pd.front || p.char != pd.char {
                 *pd = *p;
@@ -526,12 +540,7 @@ fn main() -> std::io::Result<()> {
                 queue!(stdout, style::Print(p.char))?;
             }
         }
-
-        queue!(stdout, cursor::MoveTo(0, 0))?;
-        queue!(stdout, style::SetBackgroundColor(style::Color::DarkBlue))?;
-        queue!(stdout, style::SetForegroundColor(style::Color::DarkBlue))?;
         stdout.flush()?;
-
         let diff = 1_000_000 / FPS - start.elapsed().as_micros() as i64;
         if diff > 0 {
             std::thread::sleep(Duration::from_micros(diff as u64));
