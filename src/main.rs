@@ -6,15 +6,12 @@ use std::{
 use crossterm::{
     cursor,
     event::{self, *},
-    execute,
-    style::{self},
-    terminal,
+    execute, queue, style, terminal,
 };
-
-use crossterm::queue;
 
 const W: isize = 80;
 const H: isize = 24;
+const FPS: i64 = 60;
 #[derive(Clone)]
 struct Pos {
     x: isize,
@@ -66,42 +63,94 @@ struct Rand(usize);
 
 impl Rand {
     pub fn next(&mut self) -> usize {
-        let mut random = self.0;
-        random ^= random << 13;
-        random ^= random >> 17;
-        random ^= random << 5;
-        self.0 = random;
-        random
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0
     }
 }
-
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dash {
+    Ready,
+    Dashing(usize),
+    Loading(usize),
+}
 struct Char {
     pos: Pos,
     old_pos: Pos,
     right_power: isize,
+    last_power_frame: isize,
     jump: i32,
+    double_jump_ready: bool,
     fly: bool,
     down: bool,
     dy: isize,
     dx: isize,
     player: bool,
+    dash: Dash,
+    phase: isize,
 }
-fn update_char(char: &mut Char, frames: usize, map: &mut MAP) {
+fn update_char(char: &mut Char, frames: isize, map: &mut MAP) {
+    char.dash = match char.dash {
+        Dash::Loading(x) if x > 0 => Dash::Loading(x - 1),
+        Dash::Dashing(x) if x > 0 => Dash::Dashing(x - 1),
+        Dash::Dashing(_) => Dash::Loading(60),
+        _ => Dash::Ready,
+    };
     char.old_pos = char.pos.clone();
+    let dashing = if let Dash::Dashing(_) = char.dash {
+        true
+    } else {
+        false
+    };
+
+    if dashing {
+        char.pos.x += char.right_power;
+        char.pos.x = char.pos.x.max(1).min(W - 2);
+        char.dx = char.right_power;
+        char.dy = 0;
+        return;
+    }
+
+    let fly0 = char.fly;
     if !char.fly && char.jump > 0 {
-        char.dy -= 7 + if char.right_power == 0 { 1 } else { 0 };
+        char.double_jump_ready = true;
+        char.dy -= 5 + if char.right_power == 0 { 1 } else { 0 };
         char.dx = char.right_power * 1;
         char.fly = true;
         char.jump = 0;
     }
 
+    if !char.fly {
+        let cell = map[(char.pos.x + (char.pos.y + 1) * W) as usize];
+        match cell {
+            Cell::Solid | Cell::Wall => {}
+            _ => {
+                char.fly = true;
+            }
+        }
+    }
+
+    if char.fly && !fly0 {
+        char.phase = frames;
+    }
+
+    let alt3: bool = (frames - char.phase + 1) % 3 == 0;
+
     if char.fly {
+        if char.jump > 0 && char.double_jump_ready {
+            char.double_jump_ready = false;
+            char.dy = 0;
+            char.dy -= 5 + if char.right_power == 0 { 1 } else { 0 };
+            char.dx = char.right_power * 1;
+        }
+
         if char.down {
             char.dx = 0;
             char.dy = char.dy.max(0);
         }
 
-        if frames % 2 == 0 {
+        if alt3 {
             char.pos.x += char.dx;
         }
 
@@ -109,10 +158,10 @@ fn update_char(char: &mut Char, frames: usize, map: &mut MAP) {
 
         let mut floored = false;
 
-        for _ in 0..if char.dy.abs() > 5 {
+        for _ in 0..if char.dy.abs() >= 5 {
             1
         } else {
-            if frames % 2 == 0 {
+            if alt3 {
                 1
             } else {
                 0
@@ -154,7 +203,7 @@ fn update_char(char: &mut Char, frames: usize, map: &mut MAP) {
             char.dx = 0
         }
         if char.fly {
-            if frames % 2 == 0 {
+            if alt3 {
                 char.dy += 1;
             }
         }
@@ -173,25 +222,28 @@ fn main() -> std::io::Result<()> {
     )?;
     terminal::enable_raw_mode()?;
 
-    let rand: &mut Rand = &mut Rand(5);
+    let rand = &mut Rand(5);
 
     let mut player = Char {
         pos: Pos { x: W / 2, y: H - 2 },
         old_pos: Pos { x: W / 2, y: H - 2 },
         right_power: 0_isize,
+        last_power_frame: 0,
         jump: 0,
+        double_jump_ready: true,
         fly: false,
         down: false,
         dy: 0_isize,
         dx: 0,
         player: true,
+        dash: Dash::Ready,
+        phase: 0,
     };
 
-    let mut ennemies = Vec::new();
-
+    let mut enemies = Vec::new();
     for _ in 0..2 {
         let r = (rand.next() % 30) as isize;
-        let ennemy = Char {
+        let char = Char {
             pos: Pos {
                 x: if rand.next() % 2 == 0 { r } else { W - 1 - r },
                 y: H - 2,
@@ -201,14 +253,18 @@ fn main() -> std::io::Result<()> {
                 y: H - 2,
             },
             right_power: 0_isize,
+            last_power_frame: 0,
             jump: 0,
+            double_jump_ready: true,
             fly: false,
             down: false,
             dy: 0_isize,
             dx: 0,
             player: false,
+            dash: Dash::Ready,
+            phase: 0,
         };
-        ennemies.push(ennemy);
+        enemies.push(char);
     }
 
     let mut paused = false;
@@ -231,6 +287,7 @@ fn main() -> std::io::Result<()> {
     let mut switching = 0;
 
     loop {
+        let start = std::time::Instant::now();
         frames += 1;
         while poll(Duration::from_millis(0))? {
             let e = read()?;
@@ -287,13 +344,33 @@ fn main() -> std::io::Result<()> {
                         code: KeyCode::Char('d') | KeyCode::Right,
                         ..
                     } => {
-                        player.right_power = 1;
+                        if player.dash == Dash::Ready
+                            && player.right_power == 1
+                            && (frames - player.last_power_frame) < 20
+                        {
+                            player.dash = Dash::Dashing(20)
+                        }
+                        if let Dash::Dashing(_) = player.dash {
+                        } else {
+                            player.right_power = 1;
+                            player.last_power_frame = frames;
+                        }
                     }
                     KeyEvent {
                         code: KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Left,
                         ..
                     } => {
-                        player.right_power = -1;
+                        if player.dash == Dash::Ready
+                            && player.right_power == -1
+                            && (frames - player.last_power_frame) < 20
+                        {
+                            player.dash = Dash::Dashing(20)
+                        }
+                        if let Dash::Dashing(_) = player.dash {
+                        } else {
+                            player.right_power = -1;
+                            player.last_power_frame = frames;
+                        }
                     }
                     KeyEvent {
                         code: KeyCode::Char('z') | KeyCode::Char('w') | KeyCode::Up,
@@ -310,6 +387,13 @@ fn main() -> std::io::Result<()> {
                     }
                     _ => {}
                 },
+                Event::Resize(_, _) => {
+                    pixels_drawn = [Pixel {
+                        back: style::Color::Black,
+                        front: style::Color::Black,
+                        char: '£',
+                    }; (W * H) as usize];
+                }
                 _ => {}
             }
         }
@@ -320,7 +404,7 @@ fn main() -> std::io::Result<()> {
 
         update_char(&mut player, frames, &mut map);
         switching = (switching - 1).max(0);
-        for ennemy in ennemies.iter_mut() {
+        for ennemy in enemies.iter_mut() {
             let dist = (player.pos.x - ennemy.pos.x).pow(2) + (player.pos.y - ennemy.pos.y).pow(2);
 
             if dist < 70 {
@@ -344,6 +428,7 @@ fn main() -> std::io::Result<()> {
 
             update_char(ennemy, frames, &mut map);
         }
+
         for y in 0..H {
             for x in 0..W {
                 let index = (x + y * W) as usize;
@@ -351,7 +436,7 @@ fn main() -> std::io::Result<()> {
                 let mut color = match cell {
                     Cell::Wall => style::Color::DarkBlue,
                     Cell::Air => style::Color::Black,
-                    Cell::Solid => style::Color::DarkGrey,
+                    Cell::Solid => style::Color::DarkBlue,
                 };
                 if switching > 0 {
                     color = style::Color::DarkBlue;
@@ -385,7 +470,7 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        for c in ennemies.iter().chain(std::iter::once(&player)) {
+        for c in enemies.iter().chain(std::iter::once(&player)) {
             let logo = match c.right_power {
                 1 => '>',
                 -1 => '<',
@@ -415,7 +500,11 @@ fn main() -> std::io::Result<()> {
                 let index = (c.pos.x + c.pos.y * W) as usize;
                 pixels[index] = Pixel {
                     back: if c.player {
-                        style::Color::Yellow
+                        match c.dash {
+                            Dash::Dashing(_) => style::Color::White,
+                            Dash::Loading(_) => style::Color::DarkYellow,
+                            Dash::Ready => style::Color::Yellow,
+                        }
                     } else {
                         style::Color::Green
                     },
@@ -442,6 +531,10 @@ fn main() -> std::io::Result<()> {
         queue!(stdout, style::SetBackgroundColor(style::Color::DarkBlue))?;
         queue!(stdout, style::SetForegroundColor(style::Color::DarkBlue))?;
         stdout.flush()?;
-        std::thread::sleep(Duration::from_millis(16));
+
+        let diff = 1_000_000 / FPS - start.elapsed().as_micros() as i64;
+        if diff > 0 {
+            std::thread::sleep(Duration::from_micros(diff as u64));
+        }
     }
 }
