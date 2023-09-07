@@ -12,7 +12,7 @@ use crossterm::{
 const W: isize = 80;
 const H: isize = 24;
 const FPS: i64 = 60;
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Pos {
     x: isize,
     y: isize,
@@ -90,7 +90,13 @@ struct Char {
     dash: Dash,
     phase: isize,
 }
-fn update_char(char: &mut Char, frames: isize, map: &mut MAP) {
+fn update_char(
+    char: &mut Char,
+    frames: isize,
+    map: &mut MAP,
+    rand: &mut Rand,
+    particles: &mut Vec<Particle>,
+) {
     char.dash = match char.dash {
         Dash::Loading(x) if x > 0 => Dash::Loading(x - 1),
         Dash::Dashing(x) if x > 0 => Dash::Dashing(x - 1),
@@ -102,6 +108,12 @@ fn update_char(char: &mut Char, frames: isize, map: &mut MAP) {
         true
     } else {
         false
+    };
+
+    let color = if char.player {
+        style::Color::Yellow
+    } else {
+        style::Color::Green
     };
 
     if dashing {
@@ -133,6 +145,8 @@ fn update_char(char: &mut Char, frames: isize, map: &mut MAP) {
 
     if char.fly && !fly0 {
         char.phase = frames;
+
+        spawn_particles(particles, char.pos, rand, color);
     }
 
     let alt3: bool = (frames - char.phase + 1) % 3 == 0;
@@ -199,6 +213,7 @@ fn update_char(char: &mut Char, frames: isize, map: &mut MAP) {
 
         if floored {
             char.fly = false;
+            spawn_particles(particles, char.pos, rand, color);
             char.dy = 0;
             char.dx = 0
         }
@@ -212,6 +227,28 @@ fn update_char(char: &mut Char, frames: isize, map: &mut MAP) {
     char.jump = (char.jump - 1).max(0);
 }
 
+struct Particle {
+    p: Pos,
+    dx: isize,
+    dy: isize,
+    life: isize,
+    kind: char,
+    color: style::Color,
+}
+
+fn spawn_particles(particles: &mut Vec<Particle>, pos: Pos, rand: &mut Rand, color: style::Color) {
+    for _ in 0..5 {
+        let p = Particle {
+            p: pos,
+            dx: -3 + (rand.next() % 7) as isize,
+            dy: -3 + (rand.next() % 5) as isize,
+            life: 10 + (rand.next() % 10) as isize,
+            kind: ['*', '.', '¨', '¤', '\'', '²'][rand.next() % 6],
+            color,
+        };
+        particles.push(p);
+    }
+}
 fn main() -> std::io::Result<()> {
     let mut stdout = stdout();
     execute!(
@@ -281,6 +318,8 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
         };
         enemies.push(char);
     }
+
+    let mut particles: Vec<Particle> = Vec::new();
 
     let mut paused = false;
 
@@ -409,7 +448,7 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
             continue;
         }
 
-        update_char(&mut player, frames, &mut map);
+        update_char(&mut player, frames, &mut map, rand, &mut particles);
         switching = (switching - 1).max(0);
         for ennemy in enemies.iter_mut() {
             let dist = (player.pos.x - ennemy.pos.x).pow(2) + (player.pos.y - ennemy.pos.y).pow(2);
@@ -433,7 +472,7 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
                 score += 1;
             }
 
-            update_char(ennemy, frames, &mut map);
+            update_char(ennemy, frames, &mut map, rand, &mut particles);
         }
 
         for y in 0..H {
@@ -526,6 +565,40 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
                 };
             }
         }
+
+        for p in particles.iter_mut() {
+            p.life -= 1;
+
+            if frames % (6 - p.dx.abs()) == 0 {
+                p.p.x += p.dx.signum();
+            }
+            if frames % (6 - p.dy.abs()).max(1) == 0 {
+                p.p.y += p.dy.signum();
+            }
+
+            if p.life % 4 == 0 && p.dy < 3 {
+                p.dy += 1;
+            }
+
+            if p.p.x < 1 || p.p.x >= W - 1 || p.p.y < 1 || p.p.y >= H - 1 {
+                continue;
+            }
+            let index = (p.p.x + p.p.y * W) as usize;
+            if let Pixel {
+                back: style::Color::Black,
+                front: style::Color::Black,
+                char: ' ',
+            } = pixels[index]
+            {
+                pixels[index] = Pixel {
+                    back: style::Color::Black,
+                    front: p.color,
+                    char: p.kind,
+                }
+            }
+        }
+
+        particles.retain(|p| p.life > 0);
 
         // Queue dirty pixels
         for (index, (p, pd)) in pixels.iter().zip(pixels_drawn.iter_mut()).enumerate() {
