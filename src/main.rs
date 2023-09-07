@@ -31,8 +31,8 @@ struct Pixel {
     char: char,
 }
 
-type MAP = [Cell; (W * H) as usize];
-fn gen_map(rand: &mut Rand) -> MAP {
+type Map = [Cell; (W * H) as usize];
+fn gen_map(rand: &mut Rand) -> Map {
     let mut map = [Cell::Air; (W * H) as usize];
     for x in 0..W {
         for y in 0..H {
@@ -60,7 +60,6 @@ fn gen_map(rand: &mut Rand) -> MAP {
 }
 
 struct Rand(usize);
-
 impl Rand {
     pub fn next(&mut self) -> usize {
         self.0 ^= self.0 << 13;
@@ -90,10 +89,31 @@ struct Char {
     dash: Dash,
     phase: isize,
 }
+
+impl Default for Char {
+    fn default() -> Self {
+        Self {
+            pos: Pos { x: W / 2, y: H - 2 },
+            old_pos: Pos { x: W / 2, y: H - 2 },
+            right_power: 0_isize,
+            last_power_frame: 0,
+            jump: 0,
+            double_jump_ready: true,
+            fly: false,
+            down: false,
+            dy: 0_isize,
+            dx: 0,
+            player: true,
+            dash: Dash::Ready,
+            phase: 0,
+        }
+    }
+}
+
 fn update_char(
     char: &mut Char,
     frames: isize,
-    map: &mut MAP,
+    map: &mut Map,
     rand: &mut Rand,
     particles: &mut Vec<Particle>,
 ) {
@@ -103,12 +123,8 @@ fn update_char(
         Dash::Dashing(_) => Dash::Loading(60),
         _ => Dash::Ready,
     };
-    char.old_pos = char.pos.clone();
-    let dashing = if let Dash::Dashing(_) = char.dash {
-        true
-    } else {
-        false
-    };
+    char.old_pos = char.pos;
+    let dashing = matches!(char.dash, Dash::Dashing(_));
 
     let color = if char.player {
         style::Color::Yellow
@@ -128,7 +144,7 @@ fn update_char(
     if !char.fly && char.jump > 0 {
         char.double_jump_ready = true;
         char.dy -= 5 + if char.right_power == 0 { 1 } else { 0 };
-        char.dx = char.right_power * 1;
+        char.dx = char.right_power;
         char.fly = true;
         char.jump = 0;
     }
@@ -145,8 +161,7 @@ fn update_char(
 
     if char.fly && !fly0 {
         char.phase = frames;
-
-        spawn_particles(particles, char.pos, rand, color);
+        spawn_particles(particles, char.pos, 5, rand, color);
     }
 
     let alt3: bool = (frames - char.phase + 1) % 3 == 0;
@@ -156,7 +171,7 @@ fn update_char(
             char.double_jump_ready = false;
             char.dy = 0;
             char.dy -= 5 + if char.right_power == 0 { 1 } else { 0 };
-            char.dx = char.right_power * 1;
+            char.dx = char.right_power;
         }
 
         if char.down {
@@ -172,15 +187,7 @@ fn update_char(
 
         let mut floored = false;
 
-        for _ in 0..if char.dy.abs() >= 5 {
-            1
-        } else {
-            if alt3 {
-                1
-            } else {
-                0
-            }
-        } {
+        for _ in 0..if char.dy.abs() >= 5 || alt3 { 1 } else { 0 } {
             let mut ceiled = false;
             if char.dy.signum() > 0 {
                 let cell = map[(char.pos.x + (char.pos.y + 1) * W) as usize];
@@ -202,7 +209,6 @@ fn update_char(
             if ceiled {
                 char.dy = 0
             }
-
             if floored {
                 char.dy = 0;
             }
@@ -213,14 +219,12 @@ fn update_char(
 
         if floored {
             char.fly = false;
-            spawn_particles(particles, char.pos, rand, color);
+            spawn_particles(particles, char.pos, 5, rand, color);
             char.dy = 0;
             char.dx = 0
         }
-        if char.fly {
-            if alt3 {
-                char.dy += 1;
-            }
+        if char.fly && alt3 {
+            char.dy += 1;
         }
     }
     char.down = false;
@@ -236,14 +240,20 @@ struct Particle {
     color: style::Color,
 }
 
-fn spawn_particles(particles: &mut Vec<Particle>, pos: Pos, rand: &mut Rand, color: style::Color) {
-    for _ in 0..5 {
+fn spawn_particles(
+    particles: &mut Vec<Particle>,
+    pos: Pos,
+    count: usize,
+    rand: &mut Rand,
+    color: style::Color,
+) {
+    for _ in 0..count {
         let p = Particle {
             p: pos,
             dx: -3 + (rand.next() % 7) as isize,
             dy: -3 + (rand.next() % 5) as isize,
             life: 10 + (rand.next() % 10) as isize,
-            kind: ['*', '.', '¨', '¤', '\'', '²'][rand.next() % 6],
+            kind: ['*', '.', '¨', '¤', '\'', '²', '·'][rand.next() % 7],
             color,
         };
         particles.push(p);
@@ -275,52 +285,22 @@ fn main() -> std::io::Result<()> {
 
 fn game(stdout: &mut Stdout) -> std::io::Result<()> {
     let rand = &mut Rand(5);
-
-    let mut player = Char {
-        pos: Pos { x: W / 2, y: H - 2 },
-        old_pos: Pos { x: W / 2, y: H - 2 },
-        right_power: 0_isize,
-        last_power_frame: 0,
-        jump: 0,
-        double_jump_ready: true,
-        fly: false,
-        down: false,
-        dy: 0_isize,
-        dx: 0,
-        player: true,
-        dash: Dash::Ready,
-        phase: 0,
-    };
-
+    let mut player = Char::default();
     let mut enemies = Vec::new();
     for _ in 0..2 {
         let r = (rand.next() % 30) as isize;
-        let char = Char {
-            pos: Pos {
-                x: if rand.next() % 2 == 0 { r } else { W - 1 - r },
-                y: H - 2,
-            },
-            old_pos: Pos {
-                x: 3 + W / 2,
-                y: H - 2,
-            },
-            right_power: 0_isize,
-            last_power_frame: 0,
-            jump: 0,
-            double_jump_ready: true,
-            fly: false,
-            down: false,
-            dy: 0_isize,
-            dx: 0,
-            player: false,
-            dash: Dash::Ready,
-            phase: 0,
+        let mut char = Char::default();
+        char.pos = Pos {
+            x: if rand.next() % 2 == 0 { r } else { W - 1 - r },
+            y: H - 2,
         };
+        char.old_pos = char.pos;
+        char.player = false;
         enemies.push(char);
     }
-
     let mut particles: Vec<Particle> = Vec::new();
 
+    let mut menu = true;
     let mut paused = false;
 
     let mut pixels = [Pixel {
@@ -373,7 +353,21 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
                     stdout.flush()?;
                     paused = true
                 }
-                Event::Key(event) => match event {
+                Event::Key(event) if menu => match event {
+                    KeyEvent {
+                        code: KeyCode::Char('c'),
+                        modifiers: KeyModifiers::CONTROL,
+                        kind: KeyEventKind::Press,
+                        state: KeyEventState::NONE,
+                    }
+                    | KeyEvent {
+                        code: KeyCode::Esc, ..
+                    } => {
+                        return Ok(());
+                    }
+                    _ => menu = false,
+                },
+                Event::Key(event) if !menu => match event {
                     KeyEvent {
                         code: KeyCode::Char('c'),
                         modifiers: KeyModifiers::CONTROL,
@@ -431,6 +425,10 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
                         player.down = true;
                         player.right_power = 0;
                     }
+                    KeyEvent {
+                        code: KeyCode::Char('m'),
+                        ..
+                    } => menu = true,
                     _ => {}
                 },
                 Event::Resize(_, _) => {
@@ -448,121 +446,220 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
             continue;
         }
 
-        update_char(&mut player, frames, &mut map, rand, &mut particles);
-        switching = (switching - 1).max(0);
-        for ennemy in enemies.iter_mut() {
-            let dist = (player.pos.x - ennemy.pos.x).pow(2) + (player.pos.y - ennemy.pos.y).pow(2);
+        if menu {
+            for y in 0..H {
+                for x in 0..W {
+                    let index = (x + y * W) as usize;
+                    let border = x == 0 || x == W - 1 || y == 0 || y == H - 1;
+                    let mut front = style::Color::Black;
+                    let mut back = style::Color::Black;
+                    let mut char = ' ';
+                    if border {
+                        back = style::Color::DarkBlue;
+                        front = style::Color::DarkBlue;
+                        char = ' ';
+                    }
 
-            if dist < 70 {
-                ennemy.jump = 3;
-                ennemy.right_power = -1 + (rand.next() % 3) as isize;
-                if ennemy.right_power == 0
-                    || (ennemy.pos.x == 1 && ennemy.right_power == -1)
-                    || (ennemy.pos.x == W - 2 && ennemy.right_power == 1)
-                {
-                    ennemy.right_power = -1 + (rand.next() % 3) as isize;
+                    pixels[index] = Pixel { back, front, char };
                 }
-            } else {
-                ennemy.jump = 0
             }
-
-            if switching == 0 && player.pos.x == ennemy.pos.x && player.pos.y == ennemy.pos.y {
-                switching = 60;
-                map = gen_map(rand);
-                score += 1;
-            }
-
-            update_char(ennemy, frames, &mut map, rand, &mut particles);
-        }
-
-        for y in 0..H {
-            for x in 0..W {
-                let index = (x + y * W) as usize;
-                let cell = &map[index];
-                let mut color = match cell {
-                    Cell::Wall => style::Color::DarkBlue,
-                    Cell::Air => style::Color::Black,
-                    Cell::Solid => style::Color::DarkBlue,
-                };
-                if switching > 0 {
-                    color = style::Color::DarkBlue;
+            let x = &mut 2_isize;
+            let y = &mut 2_isize;
+            let mut pprint = |x: &mut isize, y: &mut isize, c, back, front| {
+                if c == '\n' {
+                    *x = 2;
+                    *y += 1;
+                    return;
                 }
+                let index = (*x + *y * W) as usize;
                 pixels[index] = Pixel {
-                    back: color,
-                    front: color,
-                    char: ' ',
-                };
-            }
-        }
-
-        {
-            let mut x = 1;
-            for c in "yjump ".chars().chain(env!("CARGO_PKG_VERSION").chars()) {
-                pixels[x] = Pixel {
-                    back: style::Color::DarkBlue,
-                    front: style::Color::White,
+                    back,
+                    front,
                     char: c,
                 };
-                x += 1;
-            }
-        }
-        {
-            let alt = switching > 0 && switching % 8 < 4;
-            let sep = if alt { '-' } else { ' ' };
-
-            let s = format!("{}Score: {}{}", sep, score, sep);
-            let mut x = W as usize / 2 - s.len() / 2;
-            for c in s.chars() {
-                pixels[x] = Pixel {
-                    back: style::Color::DarkBlue,
-                    front: style::Color::White,
-                    char: c,
-                };
-                x += 1;
-            }
-        }
-
-        for c in enemies.iter().chain(std::iter::once(&player)) {
-            let logo = match c.right_power {
-                1 => '>',
-                -1 => '<',
-                _ => 'Y',
+                *x += 1;
+                if *x >= W - 1 {
+                    *x = 2;
+                    *y += 1;
+                }
             };
+            let text = r#"
+
+Stupid terminal game.
+Arrow keys (or WASD / ZSQD) to play.
+
+- Choose a direction, then jump with up arrow. Only key press counts.
+- Stop a jump with down arrow.
+- Double jump with up arrow.
+- Dash by double-tapping left or right.
+
+The goal is to collide with the other characters.
+"#;
+            for c in "yjump ".chars().chain(env!("CARGO_PKG_VERSION").chars()) {
+                pprint(x, y, c, style::Color::Black, style::Color::Green);
+            }
+            for c in text.chars() {
+                pprint(x, y, c, style::Color::Black, style::Color::White);
+            }
+            *y += 4;
+            *x = 25;
+            for c in "  PRESS ANY KEY TO START  ".chars() {
+                let color = if (frames + *x) % 100 < 50 {
+                    style::Color::DarkBlue
+                } else {
+                    style::Color::DarkGreen
+                };
+                pprint(x, y, c, color, style::Color::White);
+            }
+            *y = H - 2;
+            *x = 45;
+            for c in "Thomas SIMON <mail@thomassimon.dev".chars() {
+                pprint(x, y, c, style::Color::Black, style::Color::Green);
+            }
+
+            let color = if rand.next() % 2 == 0 {
+                style::Color::Yellow
+            } else {
+                style::Color::Green
+            };
+            if frames % 60 == (rand.next() % 60) as isize {
+                spawn_particles(
+                    &mut particles,
+                    Pos {
+                        x: (rand.next() % W as usize) as isize,
+                        y: (rand.next() % H as usize) as isize,
+                    },
+                    5,
+                    rand,
+                    color,
+                )
+            }
+        } else {
+            update_char(&mut player, frames, &mut map, rand, &mut particles);
+            switching = (switching - 1).max(0);
+
+            for ennemy in enemies.iter_mut() {
+                let dist =
+                    (player.pos.x - ennemy.pos.x).pow(2) + (player.pos.y - ennemy.pos.y).pow(2);
+
+                if dist < 70 {
+                    ennemy.jump = 3;
+                    ennemy.right_power = -1 + (rand.next() % 3) as isize;
+                    if ennemy.right_power == 0
+                        || (ennemy.pos.x == 1 && ennemy.right_power == -1)
+                        || (ennemy.pos.x == W - 2 && ennemy.right_power == 1)
+                    {
+                        ennemy.right_power = -1 + (rand.next() % 3) as isize;
+                    }
+                } else {
+                    ennemy.jump = 0
+                }
+
+                if switching == 0 && player.pos.x == ennemy.pos.x && player.pos.y == ennemy.pos.y {
+                    switching = 60;
+                    map = gen_map(rand);
+                    score += 1;
+                }
+
+                update_char(ennemy, frames, &mut map, rand, &mut particles);
+            }
+
+            for y in 0..H {
+                for x in 0..W {
+                    let index = (x + y * W) as usize;
+                    let cell = &map[index];
+                    let mut color = match cell {
+                        Cell::Wall => style::Color::DarkBlue,
+                        Cell::Air => style::Color::Black,
+                        Cell::Solid => style::Color::DarkBlue,
+                    };
+                    if switching > 0 {
+                        color = style::Color::DarkBlue;
+                        if (y > 4 && y < 17 && x > 45 && x < 53)
+                            || (y > 4 && y < 8 && x > 41 && x < 53)
+                            || (y > 5 && y < 16 && x > 30 && x < 35)
+                            || (y > 9 && y < 12 && x > 24 && x < 41)
+                        {
+                            color = style::Color::Green;
+                        }
+                    }
+                    pixels[index] = Pixel {
+                        back: color,
+                        front: color,
+                        char: ' ',
+                    };
+                }
+            }
+
             {
-                let mut sx = c.old_pos.x;
-                let mut sy = c.old_pos.y;
-                while sx != c.pos.x || sy != c.pos.y {
-                    let index = (sx + sy * W) as usize;
+                let mut x = 1;
+                for c in "yjump ".chars().chain(env!("CARGO_PKG_VERSION").chars()) {
+                    pixels[x] = Pixel {
+                        back: style::Color::DarkBlue,
+                        front: style::Color::White,
+                        char: c,
+                    };
+                    x += 1;
+                }
+            }
+            {
+                let alt = switching > 0 && switching % 8 < 4;
+                let sep = if alt { '-' } else { ' ' };
+
+                let s = format!("{}Score: {}{}", sep, score, sep);
+                let mut x = W as usize / 2 - s.len() / 2;
+                for c in s.chars() {
+                    pixels[x] = Pixel {
+                        back: style::Color::DarkBlue,
+                        front: style::Color::White,
+                        char: c,
+                    };
+                    x += 1;
+                }
+            }
+
+            for c in enemies.iter().chain(std::iter::once(&player)) {
+                let logo = match c.right_power {
+                    1 => '>',
+                    -1 => '<',
+                    _ => 'Y',
+                };
+                {
+                    let mut sx = c.old_pos.x;
+                    let mut sy = c.old_pos.y;
+                    while sx != c.pos.x || sy != c.pos.y {
+                        let index = (sx + sy * W) as usize;
+                        pixels[index] = Pixel {
+                            back: if c.player {
+                                style::Color::DarkYellow
+                            } else {
+                                style::Color::DarkGreen
+                            },
+                            front: style::Color::Black,
+                            char: logo,
+                        };
+                        let dy = (c.pos.y - sy).signum();
+                        sy += dy;
+                        let dx = (c.pos.x - sx).signum();
+                        sx += dx;
+                    }
+                }
+                {
+                    let index = (c.pos.x + c.pos.y * W) as usize;
                     pixels[index] = Pixel {
                         back: if c.player {
-                            style::Color::DarkYellow
+                            match c.dash {
+                                Dash::Dashing(_) => style::Color::White,
+                                Dash::Loading(_) => style::Color::DarkYellow,
+                                Dash::Ready => style::Color::Yellow,
+                            }
                         } else {
-                            style::Color::DarkGreen
+                            style::Color::Green
                         },
                         front: style::Color::Black,
                         char: logo,
                     };
-                    let dy = (c.pos.y - sy).signum();
-                    sy += dy;
-                    let dx = (c.pos.x - sx).signum();
-                    sx += dx;
                 }
-            }
-            {
-                let index = (c.pos.x + c.pos.y * W) as usize;
-                pixels[index] = Pixel {
-                    back: if c.player {
-                        match c.dash {
-                            Dash::Dashing(_) => style::Color::White,
-                            Dash::Loading(_) => style::Color::DarkYellow,
-                            Dash::Ready => style::Color::Yellow,
-                        }
-                    } else {
-                        style::Color::Green
-                    },
-                    front: style::Color::Black,
-                    char: logo,
-                };
             }
         }
 
@@ -578,6 +675,21 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
 
             if p.life % 4 == 0 && p.dy < 3 {
                 p.dy += 1;
+            }
+
+            if p.life < 5 {
+                p.color = match p.color {
+                    style::Color::Yellow => style::Color::DarkYellow,
+                    style::Color::Green => style::Color::DarkGreen,
+                    e => e,
+                }
+            }
+
+            if p.life < 2 {
+                p.color = match p.color {
+                    style::Color::DarkYellow => style::Color::DarkRed,
+                    e => e,
+                }
             }
 
             if p.p.x < 1 || p.p.x >= W - 1 || p.p.y < 1 || p.p.y >= H - 1 {
@@ -597,7 +709,6 @@ fn game(stdout: &mut Stdout) -> std::io::Result<()> {
                 }
             }
         }
-
         particles.retain(|p| p.life > 0);
 
         // Queue dirty pixels
