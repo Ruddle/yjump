@@ -10,6 +10,8 @@ Arrow keys (or WASD / ZSQD) to play.
 
 The goal is to collide with the other characters.
 
+https://github.com/Ruddle/yjump/assets/14235713/c1ddd9f3-0e10-4999-a4dd-76a1491005fd
+
 # Install
 
 ```
